@@ -41,29 +41,44 @@ class SQLServerWriteBuilder(val options: CaseInsensitiveStringMap,
   logDebug(s"SQLServerWriteBuilder created with SaveMode=$saveMode, dbtable=$dbtable")
   
   /**
-   * Detect SaveMode from LogicalWriteInfo using reflection
-   * Returns the SaveMode or DEFAULT (ErrorIfExists) if not available
+   * Detect SaveMode from LogicalWriteInfo using multiple strategies
+   * 1. Try to access the mode field through reflection (internal API)
+   * 2. Check common configuration keys used by Spark
+   * 3. Default to ErrorIfExists if not found
    */
   private def detectSaveMode(): SaveMode = {
     try {
-      // Try to access the mode field through reflection
-      val modeField = Try {
+      // Strategy 1: Try to access the mode field through reflection (internal API)
+      val modeFieldTry = Try {
         val field = info.getClass.getDeclaredField("mode")
         field.setAccessible(true)
         field.get(info).asInstanceOf[SaveMode]
       }
       
-      modeField match {
+      modeFieldTry match {
         case scala.util.Success(mode) =>
-          logDebug(s"Detected SaveMode: $mode")
-          mode
+          logDebug(s"SaveMode detected via reflection: $mode")
+          return mode
         case scala.util.Failure(_) =>
-          logDebug("Could not detect SaveMode, using default (ErrorIfExists)")
+          logDebug("Could not detect SaveMode via reflection, trying alternative methods")
+      }
+      
+      // Strategy 2: Check if SaveMode is encoded in the options (some Spark versions do this)
+      val mode = Try {
+        info.getClass.getDeclaredMethod("mode").invoke(info).asInstanceOf[SaveMode]
+      }
+      
+      mode match {
+        case scala.util.Success(m) =>
+          logDebug(s"SaveMode detected via getter method: $m")
+          m
+        case scala.util.Failure(_) =>
+          logDebug("SaveMode not found in LogicalWriteInfo, using default (ErrorIfExists)")
           SaveMode.ErrorIfExists
       }
     } catch {
       case e: Exception =>
-        logWarning(s"Error detecting SaveMode: ${e.getMessage}")
+        logWarning(s"Error detecting SaveMode: ${e.getMessage}, using default")
         SaveMode.ErrorIfExists
     }
   }
