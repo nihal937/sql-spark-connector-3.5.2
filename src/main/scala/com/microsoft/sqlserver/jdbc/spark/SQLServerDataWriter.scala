@@ -21,7 +21,7 @@ import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.write.DataWriter
 import org.apache.spark.sql.connector.write.WriterCommitMessage
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import scala.collection.mutable.ArrayBuffer
 import java.sql.Connection
@@ -106,7 +106,16 @@ class SQLServerDataWriter(val partitionId: Int,
     try {
       if (connection == null) {
         connection = createConnection(opts)
-        // Get column metadata from an empty result set to align with table schema
+        
+        // Create table if it doesn't exist (only partition 0 to avoid race conditions)
+        if (partitionId == 0) {
+          if (!tableExists(connection, opts.dbtable)) {
+            createTableFromSchema(connection, opts.dbtable, schema)
+            logInfo(s"Created new table ${opts.dbtable} from DataFrame schema")
+          }
+        }
+        
+        // Get column metadata from the table
         val emptyRs = getEmptyResultSet(connection, opts.dbtable)
         colMetadata = defaultColMetadataMap(emptyRs.getMetaData())
         
@@ -147,6 +156,84 @@ class SQLServerDataWriter(val partitionId: Int,
         logError(s"Error truncating table $tableName: ${e.getMessage}", e)
         throw new RuntimeException(s"Failed to truncate table: ${e.getMessage}", e)
     }
+  }
+
+  /**
+   * Check if a table exists in SQL Server
+   */
+  private def tableExists(conn: Connection, tableName: String): Boolean = {
+    try {
+      val query = s"""
+        SELECT 1 FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_NAME = ? AND TABLE_SCHEMA = 'dbo'
+      """
+      val pstmt = conn.prepareStatement(query)
+      pstmt.setString(1, tableName)
+      val rs = pstmt.executeQuery()
+      val exists = rs.next()
+      rs.close()
+      pstmt.close()
+      exists
+    } catch {
+      case e: Exception =>
+        logWarning(s"Error checking if table $tableName exists: ${e.getMessage}")
+        false
+    }
+  }
+
+  /**
+   * Create table based on DataFrame schema
+   */
+  private def createTableFromSchema(conn: Connection, tableName: String, dfSchema: StructType): Unit = {
+    try {
+      val columnDefs = dfSchema.fields.map { field =>
+        val sqlType = sparkTypeToSqlServerType(field.dataType, field.nullable)
+        s"[${field.name}] $sqlType"
+      }.mkString(",\n    ")
+
+      val createTableQuery = s"""
+        CREATE TABLE [$tableName] (
+          $columnDefs
+        )
+      """
+
+      logDebug(s"Creating table with query:\n$createTableQuery")
+      val stmt = conn.createStatement()
+      stmt.execute(createTableQuery)
+      stmt.close()
+      logInfo(s"Successfully created table $tableName")
+    } catch {
+      case e: Exception =>
+        logError(s"Error creating table $tableName: ${e.getMessage}", e)
+        throw new RuntimeException(s"Failed to create table: ${e.getMessage}", e)
+    }
+  }
+
+  /**
+   * Map Spark DataType to SQL Server column type
+   */
+  private def sparkTypeToSqlServerType(dataType: DataType, nullable: Boolean): String = {
+    val baseType = dataType match {
+      case ByteType => "TINYINT"
+      case ShortType => "SMALLINT"
+      case IntegerType => "INT"
+      case LongType => "BIGINT"
+      case FloatType => "REAL"
+      case DoubleType => "FLOAT"
+      case DecimalType() => "DECIMAL(18, 2)"
+      case BooleanType => "BIT"
+      case StringType => "NVARCHAR(MAX)"
+      case BinaryType => "VARBINARY(MAX)"
+      case DateType => "DATE"
+      case TimestampType => "DATETIME2"
+      case TimestampNTZType => "DATETIME2"
+      case ArrayType(_, _) => "NVARCHAR(MAX)" // Store arrays as JSON strings
+      case MapType(_, _, _) => "NVARCHAR(MAX)" // Store maps as JSON strings
+      case StructType(_) => "NVARCHAR(MAX)" // Store structs as JSON strings
+      case _ => "NVARCHAR(MAX)" // Default fallback
+    }
+
+    if (nullable) s"$baseType NULL" else s"$baseType NOT NULL"
   }
 
   /**
