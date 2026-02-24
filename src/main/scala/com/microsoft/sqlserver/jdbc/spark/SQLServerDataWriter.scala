@@ -17,6 +17,7 @@ import com.microsoft.sqlserver.jdbc.spark.BulkCopyUtils.{defaultColMetadataMap, 
 import com.microsoft.sqlserver.jdbc.spark.utils.JdbcUtils.createConnection
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.Row
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.write.DataWriter
 import org.apache.spark.sql.connector.write.WriterCommitMessage
@@ -28,20 +29,23 @@ import java.sql.Connection
 /**
  * SQLServerDataWriter handles the actual write of a single partition to SQL Server.
  * It buffers rows and writes them using the SQL Server bulk copy API.
+ * Automatically truncates table for SaveMode.Overwrite (partition 0 only).
  */
 class SQLServerDataWriter(val partitionId: Int,
                           val taskId: Long,
                           val options: CaseInsensitiveStringMap,
-                          val schema: StructType) extends DataWriter[InternalRow] with Logging {
+                          val schema: StructType,
+                          val saveMode: SaveMode = SaveMode.ErrorIfExists) extends DataWriter[InternalRow] with Logging {
 
   private val buffer = new ArrayBuffer[Row]()
   private val BUFFER_SIZE = 10000 // Batch size for writes
   private var connection: Connection = _
   private var colMetadata: Array[ColumnMetadata] = _
   private var totalRows = 0L
+  private var isTruncated = false  // Track if table has been truncated
   private val opts = new SQLServerBulkJdbcOptions(convertCaseInsensitiveMapToScala(options))
 
-  logDebug(s"SQLServerDataWriter initialized for partition $partitionId, task $taskId")
+  logDebug(s"SQLServerDataWriter initialized for partition $partitionId, task $taskId, saveMode=$saveMode")
 
   /**
    * write adds a row to the buffer and flushes when buffer reaches limit
@@ -105,6 +109,14 @@ class SQLServerDataWriter(val partitionId: Int,
         // Get column metadata from an empty result set to align with table schema
         val emptyRs = getEmptyResultSet(connection, opts.dbtable)
         colMetadata = defaultColMetadataMap(emptyRs.getMetaData())
+        
+        // Auto-truncate for Overwrite mode on first write
+        // Only partition 0 truncates to avoid race conditions
+        if (partitionId == 0 && !isTruncated && saveMode == SaveMode.Overwrite) {
+          truncateTable(connection, opts.dbtable)
+          isTruncated = true
+          logInfo(s"Auto-truncated table ${opts.dbtable} for SaveMode.Overwrite")
+        }
       }
 
       logDebug(s"Flushing ${buffer.size} rows from partition $partitionId")
@@ -117,6 +129,23 @@ class SQLServerDataWriter(val partitionId: Int,
       case e: Exception =>
         logError(s"Error flushing buffer for partition $partitionId: ${e.getMessage}", e)
         throw e
+    }
+  }
+
+  /**
+   * Truncate the table before first write (for SaveMode.Overwrite)
+   */
+  private def truncateTable(conn: Connection, tableName: String): Unit = {
+    try {
+      val truncateQuery = s"TRUNCATE TABLE [$tableName]"
+      val stmt = conn.createStatement()
+      stmt.execute(truncateQuery)
+      stmt.close()
+      logInfo(s"Truncated table $tableName for partition $partitionId")
+    } catch {
+      case e: Exception =>
+        logError(s"Error truncating table $tableName: ${e.getMessage}", e)
+        throw new RuntimeException(s"Failed to truncate table: ${e.getMessage}", e)
     }
   }
 

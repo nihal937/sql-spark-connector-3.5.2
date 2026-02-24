@@ -47,19 +47,17 @@ class SQLServerTable(val options: CaseInsensitiveStringMap,
 
   /**
    * capabilities defines what operations this table supports
+   * Only BATCH_WRITE is declared. TRUNCATE is handled internally in DataWriter.
+   * Do NOT declare TRUNCATE as it triggers Spark's CTAS behavior for overwrite mode.
    */
   override def capabilities(): util.Set[TableCapability] = {
-    util.EnumSet.of(
-      TableCapability.BATCH_WRITE,
-      TableCapability.TRUNCATE
-    )
+    util.EnumSet.of(TableCapability.BATCH_WRITE)
   }
 
   /**
    * newWriteBuilder creates a WriteBuilder for batch write operations
    */
   override def newWriteBuilder(info: LogicalWriteInfo): WriteBuilder = {
-    logDebug(s"newWriteBuilder called for table ${name()}")
     new SQLServerWriteBuilder(options, info)
   }
 }

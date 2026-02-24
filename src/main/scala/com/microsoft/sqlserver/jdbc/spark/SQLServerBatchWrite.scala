@@ -16,6 +16,7 @@ package com.microsoft.sqlserver.jdbc.spark
 import com.microsoft.sqlserver.jdbc.spark.BulkCopyUtils._
 import com.microsoft.sqlserver.jdbc.spark.utils.JdbcUtils.createConnection
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.write.BatchWrite
 import org.apache.spark.sql.connector.write.DataWriterFactory
@@ -29,19 +30,21 @@ import java.sql.Connection
 
 /**
  * SQLServerBatchWrite implements the BatchWrite interface for batch write operations.
- * It coordinates the write process including table creation, truncation, and partition writes.
+ * It coordinates the write process across partitions.
+ * Automatically handles truncation based on SaveMode (Overwrite mode auto-truncates).
  */
 class SQLServerBatchWrite(val options: CaseInsensitiveStringMap,
-                          val schema: StructType) extends Write with BatchWrite with Logging {
+                          val schema: StructType,
+                          val saveMode: SaveMode = SaveMode.ErrorIfExists) extends Write with BatchWrite with Logging {
 
-  logDebug("SQLServerBatchWrite initialized")
+  logDebug(s"SQLServerBatchWrite initialized with saveMode=$saveMode")
 
   /**
    * createBatchWriterFactory creates a factory for DataWriter instances
    */
   override def createBatchWriterFactory(info: PhysicalWriteInfo): DataWriterFactory = {
-    logDebug("createBatchWriterFactory called")
-    new SQLServerDataWriterFactory(options, schema)
+    logDebug(s"createBatchWriterFactory called with saveMode=$saveMode")
+    new SQLServerDataWriterFactory(options, schema, saveMode)
   }
 
   /**
