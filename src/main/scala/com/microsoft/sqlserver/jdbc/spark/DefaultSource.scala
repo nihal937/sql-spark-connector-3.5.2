@@ -13,62 +13,33 @@
 */
 package com.microsoft.sqlserver.jdbc.spark
 
-import com.microsoft.sqlserver.jdbc.spark.BulkCopyUtils._
-import com.microsoft.sqlserver.jdbc.spark.utils.JdbcUtils.createConnection
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.execution.datasources.jdbc.JdbcRelationProvider
-import org.apache.spark.sql.sources.BaseRelation
-import org.apache.spark.sql.{DataFrame, SQLContext, SaveMode}
+import org.apache.spark.sql.connector.catalog.Table
+import org.apache.spark.sql.connector.expressions.Transform
+import org.apache.spark.sql.sources.DataSourceRegister
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 /**
- * DefaultSource extends JDBCRelationProvider to provide a implmentation for MSSQLSpark connector.
- * Only write function is overridden. 
- * Read functionality not overridden and is re-used from defualt JDBC connector. 
+ * DefaultSource implements DataSourceV2 to provide a high-performance SQL Server and Azure SQL connector.
+ * This supports both read and write operations, with optimized bulk write capabilities.
+ * Read functionality leverages Spark's standard JDBC connector.
  * Read for datapool external tables is supported from Master instance that's handled via JDBC logic.
  */
-class DefaultSource extends JdbcRelationProvider with Logging {
+class DefaultSource extends DataSourceRegister with Logging {
 
     /**
-     * shortName overides datasource interface to provide an alias to access mssql spark connector. 
+     * shortName provides an alias to access the MSSQL Spark connector 
      */
-    
     override def shortName(): String = "mssql"
 
     /**
-     * createRelation overrides createRelations from JdbcRelationProvider to implement custom write 
-     * for both SQLServer Master instance and Data pools. The choice is made at run time based on 
-     * based on the passed parameter map.
-     * @param sqlContext SQLContext passed from spark jdbc datasource framework.
-     * @param mode as passed from spark jdbc datasource framework
-     * @param parameters User options passed as a parameter map
-     * @param rawDf raw dataframe passed from spark data soruce framework
-     * 
+     * getTable creates a Table object representing the SQL Server table for DataSourceV2 operations
      */
-     override def createRelation(
-                    sqlContext: SQLContext,
-                    mode: SaveMode,
-                    parameters: Map[String, String],
-                    rawDf: DataFrame): BaseRelation = {
-        // set SQL Server session application name to SparkMSSQLConnector:user input name
-        // if no user input app name provided, will use SparkMSSQLConnector:NotSpecified
-        val applicationName = s"SparkMSSQLConnector:${parameters.getOrElse("applicationname", "NotSpecified")}"
-        val options = new SQLServerBulkJdbcOptions(parameters  + ("applicationname" -> applicationName))
-        val conn = createConnection(options)
-        val df = repartitionDataFrame(rawDf, options)
-
-        logInfo(s"JDBC Driver major/mior version " +
-          s"${conn.getMetaData().getJDBCMajorVersion()}  ${conn.getMetaData().getJDBCMinorVersion()}")
-        logDebug("createRelations: Write request. Connection catalogue is" + s"${conn.getCatalog()}")
-        logDebug(s"createRelations: Write request. ApplicationId is ${sqlContext.sparkContext.applicationId}")
-        try {
-            checkIsolationLevel(conn, options)
-            val connector = ConnectorFactory.get(options)
-            connector.write(sqlContext, mode, df, conn, options)
-        } finally {
-            logDebug("createRelations: Closing connection")
-            conn.close()
-        }
-        logDebug("createRelations: Exiting")
-        super.createRelation(sqlContext, parameters)
+    def getTable(options: CaseInsensitiveStringMap,
+                 partitioning: Array[Transform],
+                 schema: StructType): Table = {
+      logDebug(s"getTable called with dbtable=${options.get("dbtable")}")
+      new SQLServerTable(options, schema)
     }
 }

@@ -1,0 +1,1 @@
+typeSearchIndex = [{"l":"All Classes and Interfaces","u":"allclasses-index.html","k":"18"},{"p":"com.microsoft.sqlserver.jdbc.spark","l":"ColumnMetadata"},{"p":"com.microsoft.sqlserver.jdbc.spark","l":"DataFrameBulkRecord"},{"p":"com.microsoft.sqlserver.jdbc.spark","l":"MyXidImpl"}];updateSearchResults();

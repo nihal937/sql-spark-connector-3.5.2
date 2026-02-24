@@ -1,0 +1,3 @@
+com\microsoft\sqlserver\jdbc\spark\DataFrameBulkRecord.class
+com\microsoft\sqlserver\jdbc\spark\MyXidImpl.class
+com\microsoft\sqlserver\jdbc\spark\ColumnMetadata.class
